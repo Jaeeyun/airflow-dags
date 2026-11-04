@@ -11,9 +11,17 @@ from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperato
 from kubernetes.client import models as k8s
 
 IMAGE = "jaeyun1/retrain:v1"
-NAMESPACE = "airflow"
-SECRET_NAME = "retrain-secrets"   # MLFLOW_TRACKING_URI, FEEDBACK_DATABASE_URL, KMA_API_KEY
+NAMESPACE = "ai"                      # [EKS] Airflow가 ai 네임스페이스에 있으므로 재학습 파드도 ai에 띄운다
+MLFLOW_URI = "http://mlflow.ai.svc:5000"   # [EKS] 클러스터 안의 MLflow 주소
 REJECTED_EXIT_CODE = 99           # stages.py promote 가 "승격 안 함"일 때 내는 종료코드
+
+
+def secret_env(env_name: str, secret_name: str, key: str) -> k8s.V1EnvVar:
+    """Secret의 값을 환경변수로 넣는다 (값이 코드와 Git에 남지 않는다)."""
+    return k8s.V1EnvVar(
+        name=env_name,
+        value_from=k8s.V1EnvVarSource(secret_key_ref=k8s.V1SecretKeySelector(name=secret_name, key=key)),
+    )
 
 
 def stage(name: str) -> KubernetesPodOperator:
@@ -27,7 +35,21 @@ def stage(name: str) -> KubernetesPodOperator:
         cmds=["python", "stages.py"],
         # {{ run_id }} : 이번 DAG 실행의 고유 ID. 네 Task가 같은 MLflow run을 찾는 열쇠다.
         arguments=[name, "--airflow-run-id", "{{ run_id }}"],
-        env_from=[k8s.V1EnvFromSource(secret_ref=k8s.V1SecretEnvSource(name=SECRET_NAME))],
+        # [EKS] 별도 Secret을 만들지 않고 이미 있는 Secret을 직접 참조한다
+        env_vars=[
+            k8s.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_URI),
+            secret_env("FEEDBACK_DATABASE_URL", "airflow-feedback-db", "connection"),  # 피드백 DB 읽기 전용
+            secret_env("KMA_API_KEY", "kma-secret", "API_KEY"),
+        ],
+        # [EKS] 피드백 DB 접속(verify-full)에 쓰는 RDS CA 인증서를 /etc/postgresql/ca.crt로 마운트
+        volumes=[k8s.V1Volume(
+            name="db-ca",
+            secret=k8s.V1SecretVolumeSource(
+                secret_name="airflow-feedback-db",
+                items=[k8s.V1KeyToPath(key="ca.crt", path="ca.crt")],
+            ),
+        )],
+        volume_mounts=[k8s.V1VolumeMount(name="db-ca", mount_path="/etc/postgresql", read_only=True)],
         container_resources=k8s.V1ResourceRequirements(
             requests={"cpu": "200m", "memory": "256Mi"},
             limits={"memory": "1Gi"},
