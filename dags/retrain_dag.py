@@ -3,14 +3,14 @@
 
 이 파일은 "무엇을 어떤 순서로, 언제" 실행할지만 적는다.
 실제 일은 jaeyun1/retrain 이미지 안의 stages.py가 한다.
-Task 하나 = 파드 하나(KubernetesPodOperator)이고, 네 Task는 직렬로 실행된다.
+Task 하나 = 파드 하나(KubernetesPodOperator)이고, 4개의 Task는 직렬로 실행된다.
 """
 import pendulum
 from airflow.sdk import DAG
 from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
 from kubernetes.client import models as k8s
 
-IMAGE = "jaeyun1/retrain:v1"
+IMAGE = "jaeyun1/retrain:v2"
 NAMESPACE = "ai"                      # [EKS] Airflow가 ai 네임스페이스에 있으므로 재학습 파드도 ai에 띄운다
 MLFLOW_URI = "http://mlflow.ai.svc:5000"   # [EKS] 클러스터 안의 MLflow 주소
 REJECTED_EXIT_CODE = 99           # stages.py promote 가 "승격 안 함"일 때 내는 종료코드
@@ -38,6 +38,7 @@ def stage(name: str) -> KubernetesPodOperator:
         # [EKS] 별도 Secret을 만들지 않고 이미 있는 Secret을 직접 참조한다
         env_vars=[
             k8s.V1EnvVar(name="MLFLOW_TRACKING_URI", value=MLFLOW_URI),
+            k8s.V1EnvVar(name="FEEDBACK_TABLE", value="feedbacks"),
             secret_env("FEEDBACK_DATABASE_URL", "airflow-feedback-db", "connection"),  # 피드백 DB 읽기 전용
             secret_env("KMA_API_KEY", "kma-secret", "API_KEY"),
         ],
